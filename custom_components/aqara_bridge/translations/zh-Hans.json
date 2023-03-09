@@ -1,10 +1,10 @@
 {
     "config": {
         "abort": {
-
+            "complete": "配置完成"
         },
         "error": {
-
+            "get_auth_code_error": "获取短信验证码异常，请稍后重试"
         },
         "flow_title": "{name}",
         "step": {
@@ -12,10 +12,13 @@
                 "data": {
                     "field_country_code": "云服务国家/地区",
                     "field_account": "Aqara Home账号（手机号）",
+                    "field_app_id": "开放平台app_id，可使用默认",
+                    "field_app_key": "开放平台app_key，可使用默认",
+                    "field_key_id": "开放平台key_id，可使用默认",
                     "field_refresh_token": "刷新令牌（开发用）"
                 },
                 "description": "使用在Aqara Home注册的账号进行登录。",
-                "title": "登录到Aqara云服务平台"
+                "title": "Aqara云服务平台"
             },
             "get_token": {
                 "data": {
@@ -23,25 +26,37 @@
                 },
                 "description": "请输入短信验证码。",
                 "title": "登录到Aqara云服务平台"
-            },
-            "select_devices": {
-                "data": {
-                    "field_selected_devices": "选择设备"
-                },
-                "description": "从列表中选择需要绑定的设备。",
-                "title": "从Aqara云服务平台绑定设备"
             }
         }
     },
     "options": {
+        "abort": {
+            "complete": "配置完成"
+        },
         "step": {
             "init": {
-                "title": "Bridge \u914d\u7f6e",
                 "data": {
-                    "stats": "Stats",
-                    "debug": "\u9664\u9519"
-                }
+                    "field_country_code": "云服务国家/地区",
+                    "field_account": "Aqara Home账号（手机号）",
+                    "field_app_id": "开放平台app_id，推荐使用自己，防止状态丢失",
+                    "field_app_key": "开放平台app_key，推荐使用自己，防止状态丢失",
+                    "field_key_id": "开放平台key_id，推荐使用自己，防止状态丢失",
+                    "field_refresh_token": "刷新令牌（开发用）"
+                },
+                "description": "使用在Aqara Home注册的账号进行登录。",
+                "title": "选项"
+            },
+            "option_get_token": {
+                "data": {
+                    "field_auth_code": "短信验证码"
+                },
+                "description": "请输入短信验证码。",
+                "title": "选项"
             }
+        },
+        "error": {
+            "refresh_token_error": "刷新令牌错误，无法使用。",
+            "auth_code_error": "短信验证码错误，请重新输入。"
         }
     }
 }

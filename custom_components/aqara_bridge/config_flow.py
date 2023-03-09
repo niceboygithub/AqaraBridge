@@ -7,40 +7,12 @@ from homeassistant.config_entries import (
     ConfigFlow,
     OptionsFlow,
     ConfigEntry
-    )
+)
 from homeassistant.core import callback
 
 from . import init_hass_data, data_masking, gen_auth_entry
-from .core.const import (
-    DOMAIN,
-    CONF_FIELD_ACCOUNT,
-    CONF_FIELD_COUNTRY_CODE,
-    CONF_FIELD_AUTH_CODE,
-    CONF_FIELD_SELECTED_DEVICES,
-    CONF_FIELD_REFRESH_TOKEN,
-    CONF_ENTRY_AUTH_ACCOUNT,
-    HASS_DATA_AIOTCLOUD,
-    HASS_DATA_AIOT_MANAGER,
-    SERVER_COUNTRY_CODES,
-    SERVER_COUNTRY_CODES_DEFAULT,
-    CONF_ENTRY_AUTH_ACCOUNT,
-    HASS_DATA_AUTH_ENTRY_ID,
-    CONF_DEBUG,
-    CONF_STATS,
-    OPT_DEBUG
-)
-
+from .core.const import *
 _LOGGER = logging.getLogger(__name__)
-
-DEVICE_GET_AUTH_CODE_CONFIG = vol.Schema(
-    {
-        vol.Required(CONF_FIELD_ACCOUNT): str,
-        vol.Required(
-            CONF_FIELD_COUNTRY_CODE, default=SERVER_COUNTRY_CODES_DEFAULT
-        ): vol.In(SERVER_COUNTRY_CODES),
-        vol.Optional(CONF_FIELD_REFRESH_TOKEN): str,
-    }
-)
 
 DEVICE_GET_TOKEN_CONFIG = vol.Schema({vol.Required(CONF_FIELD_AUTH_CODE): str})
 
@@ -55,6 +27,9 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
         self.account = None
         self.country_code = None
         self.account_type = None
+        self.app_id = None
+        self.app_key = None
+        self.key_id = None
         self._session = None
         self._device_manager = None
 
@@ -62,9 +37,7 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry):
         """ get option flow """
-        if CONF_ENTRY_AUTH_ACCOUNT in config_entry.data:
-            return OptionsFlowHandler(config_entry)
-        return DeviceOptionsFlowHandler(config_entry)
+        return OptionsFlowHandler(config_entry)
 
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user."""
@@ -72,14 +45,7 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
         self._device_manager = self.hass.data[DOMAIN][HASS_DATA_AIOT_MANAGER]
         auth_entry_id = self.hass.data[DOMAIN][HASS_DATA_AUTH_ENTRY_ID]
         self._session = self.hass.data[DOMAIN][HASS_DATA_AIOTCLOUD]
-        if auth_entry_id:
-            return await self.async_step_select_devices()
-        else:
-            # self._session = AiotCloud(
-            #     aiohttp_client.async_create_clientsession(self.hass)
-            # )
-            # self.hass.data[DOMAIN][HASS_DATA_AIOTCLOUD] = self._session
-            return await self.async_step_get_auth_code()
+        return await self.async_step_get_auth_code()
 
     async def async_step_get_auth_code(self, user_input=None):
         """Configure an aqara device through the Aqara Cloud."""
@@ -87,17 +53,22 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
         if user_input:
             self.account = user_input.get(CONF_FIELD_ACCOUNT)
             self.country_code = user_input.get(CONF_FIELD_COUNTRY_CODE)
+            self.app_id = user_input.get(CONF_FIELD_APP_ID)
+            self.app_key = user_input.get(CONF_FIELD_APP_KEY)
+            self.key_id = user_input.get(CONF_FIELD_KEY_ID)
             self.account_type = 0
             self._session.set_country(self.country_code)
+            self._session.set_app_id(self.app_id)
+            self._session.set_app_key(self.app_key)
+            self._session.set_key_id(self.key_id)
 
             refresh_token = user_input.get(CONF_FIELD_REFRESH_TOKEN)
             if refresh_token and refresh_token != "":
                 resp = await self._session.async_refresh_token(refresh_token)
                 if resp["code"] == 0:
                     auth_entry = gen_auth_entry(
-                        self.account,
-                        self.account_type,
-                        self.country_code,
+                        self.app_id, self.app_key, self.key_id,
+                        self.account, self.account_type, self.country_code,
                         resp["result"],
                     )
                     self.hass.async_add_job(
@@ -105,21 +76,37 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
                             DOMAIN, context={"source": "get_token"}, data=auth_entry
                         )
                     )
-                    return await self.async_step_select_devices()
+                    return self.async_abort(reason="complete")
                 else:
-                    # TODO 这里要处理API失败的情况
-                    pass
+                    errors['base'] = 'refresh_token_error'
             else:
                 resp = await self._session.async_get_auth_code(self.account, 0)
                 if resp["code"] == 0:
                     return await self.async_step_get_token()
                 else:
-                    # TODO 这里要处理API失败的情况
-                    pass
+                    errors['base'] = 'auth_code_error'
+        def_account = user_input.get(
+            CONF_FIELD_ACCOUNT) if user_input and user_input.get(CONF_FIELD_ACCOUNT) else ""
+        def_country_code = user_input.get(CONF_FIELD_COUNTRY_CODE) if user_input and user_input.get(
+            CONF_FIELD_COUNTRY_CODE) else SERVER_COUNTRY_CODES_DEFAULT
+        def_app_id = user_input.get(CONF_FIELD_APP_ID) if user_input and user_input.get(
+            CONF_FIELD_APP_ID) else DEFAULT_CLOUD_APP_ID
+        def_app_key = user_input.get(CONF_FIELD_APP_KEY) if user_input and user_input.get(
+            CONF_FIELD_APP_KEY) else DEFAULT_CLOUD_APP_KEY
+        def_key_id = user_input.get(CONF_FIELD_KEY_ID) if user_input and user_input.get(
+            CONF_FIELD_KEY_ID) else DEFAULT_CLOUD_KEY_ID
 
+        config_scheme = vol.Schema({
+            vol.Required(CONF_FIELD_ACCOUNT, default=def_account): str,
+            vol.Required(CONF_FIELD_COUNTRY_CODE, default=def_country_code): vol.In(SERVER_COUNTRY_CODES),
+            vol.Required(CONF_FIELD_APP_ID, default=def_app_id): str,
+            vol.Required(CONF_FIELD_APP_KEY, default=def_app_key): str,
+            vol.Required(CONF_FIELD_KEY_ID, default=def_key_id): str,
+            vol.Optional(CONF_FIELD_REFRESH_TOKEN): str,
+        })
         return self.async_show_form(
             step_id="get_auth_code",
-            data_schema=DEVICE_GET_AUTH_CODE_CONFIG,
+            data_schema=config_scheme,
             errors=errors,
         )
 
@@ -132,9 +119,8 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
 
                 if resp["code"] == 0:
                     auth_entry = gen_auth_entry(
-                        self.account,
-                        self.account_type,
-                        self.country_code,
+                        self.app_id, self.app_key, self.key_id,
+                        self.account, self.account_type, self.country_code,
                         resp["result"],
                     )
                     self.hass.async_add_job(
@@ -143,115 +129,102 @@ class AqaraBridgeFlowHandler(ConfigFlow, domain=DOMAIN):
                         )
                     )
                 else:
-                    errors["base"] = "cloud_credentials_incomplete"
+                    errors["base"] = "get_auth_code_error"
             elif CONF_ENTRY_AUTH_ACCOUNT in user_input:
                 return self.async_create_entry(
                     title=data_masking(user_input[CONF_ENTRY_AUTH_ACCOUNT], 4),
                     data=user_input,
                 )
 
-            return await self.async_step_select_devices()
+            return self.async_abort(reason="complete")
 
         return self.async_show_form(
             step_id="get_token", data_schema=DEVICE_GET_TOKEN_CONFIG, errors=errors
         )
 
-    async def async_step_select_devices(self, user_input=None):
-        errors = {}
-        if user_input:
-            if CONF_FIELD_SELECTED_DEVICES in user_input:
-                dids = user_input[CONF_FIELD_SELECTED_DEVICES]
-                devices = await self._session.async_query_device_info(dids)
-                for device in devices:
-                    self.hass.async_add_job(
-                        self.hass.config_entries.flow.async_init(
-                            DOMAIN, context={"source": "select_devices"}, data=device
-                        )
-                    )
-            elif "did" in user_input:
-                await self.async_set_unique_id(
-                    user_input["did"], raise_on_progress=False
-                )
-                return self.async_create_entry(
-                    title=user_input["deviceName"], data=user_input
-                )
-
-            return self.async_abort(reason="complete")
-
-        devlist = {}
-        await self._device_manager.async_refresh_all_devices()  # 刷新一下
-        [
-            devlist.setdefault(x.did, f"{x.device_name} - {x.model}")
-            for x in self._device_manager.unmanaged_gateways
-        ]
-        return self.async_show_form(
-            step_id="select_devices",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_FIELD_SELECTED_DEVICES, default=[]
-                    ): cv.multi_select(devlist)
-                }
-            ),
-            errors=errors,
-        )
 
 class OptionsFlowHandler(OptionsFlow):
-    # pylint: disable=too-few-public-methods
-    """Handle options flow changes."""
-    _account = None
-    _token = None
-
     def __init__(self, config_entry):
         """Initialize options flow."""
         self.config_entry = config_entry
+        self.account = None
+        self.country_code = None
+        self.account_type = 0
+        self._session = None
 
     async def async_step_init(self, user_input=None):
-        """Manage options."""
-        if user_input is not None:
-            return self.async_create_entry(
-                title='',
-                data={
-                    CONF_DEBUG: user_input.get(CONF_DEBUG, []),
-                },
-            )
-        debug = self.config_entry.options.get(CONF_DEBUG, [])
+        """Configure an aqara device through the Aqara Cloud."""
+        errors = {}
+        if isinstance(user_input, dict):
+            # 用户输入
+            self.account = user_input.get(CONF_FIELD_ACCOUNT)
+            self.country_code = user_input.get(CONF_FIELD_COUNTRY_CODE)
+            if self._session is None:
+                self._session = self.hass.data[DOMAIN][HASS_DATA_AIOTCLOUD]
+            self._session.set_country(self.country_code)
+            self._session.set_app_id(user_input.get(CONF_FIELD_APP_ID))
+            self._session.set_app_key(user_input.get(CONF_FIELD_APP_KEY))
+            self._session.set_key_id(user_input.get(CONF_FIELD_KEY_ID))
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
+            refresh_token = user_input.get(CONF_FIELD_REFRESH_TOKEN)
+            if refresh_token and refresh_token != "":
+                # 更新了token值
+                resp = await self._session.async_refresh_token(refresh_token)
+                if resp["code"] == 0:
+                    auth_entry = gen_auth_entry(
+                        self._session.get_app_id(), self._session.get_app_key(), self._session.get_key_id(),
+                        self.account, self.account_type, self.country_code,
+                        resp["result"],
+                    )
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=auth_entry)
+                    return self.async_abort(reason="complete")
+                else:
+                    errors['base'] = 'refresh_token_error'
+            else:
+                resp = await self._session.async_get_auth_code(self.account, 0)
+                if resp["code"] == 0:
+                    return await self.async_step_option_get_token()
+                else:
+                    errors['base'] = 'auth_code_error'
+        else:
+            prev_input = {
+                **self.config_entry.data,
+                **self.config_entry.options,
+            }
+            config_scheme = vol.Schema(
                 {
-                    vol.Optional(CONF_DEBUG, default=debug): cv.multi_select(
-                        OPT_DEBUG
-                    ),
+                    vol.Required(CONF_FIELD_ACCOUNT,
+                                 default=prev_input.get(CONF_ENTRY_AUTH_ACCOUNT, vol.UNDEFINED)): str,
+                    vol.Required(CONF_FIELD_COUNTRY_CODE,
+                                 default=prev_input.get(SERVER_COUNTRY_CODES_DEFAULT, vol.UNDEFINED)): vol.In(SERVER_COUNTRY_CODES),
+                    vol.Optional(CONF_FIELD_APP_ID,
+                                 default=prev_input.get(CONF_ENTRY_APP_ID, vol.UNDEFINED)): str,
+                    vol.Optional(CONF_FIELD_APP_KEY,
+                                 default=prev_input.get(CONF_ENTRY_APP_KEY, vol.UNDEFINED)): str,
+                    vol.Optional(CONF_FIELD_KEY_ID,
+                                 default=prev_input.get(CONF_ENTRY_KEY_ID, vol.UNDEFINED)): str,
+                    vol.Optional(CONF_FIELD_REFRESH_TOKEN): str,
                 }
-            ),
-        )
-
-
-class DeviceOptionsFlowHandler(OptionsFlow):
-    """Handle options flow changes."""
-
-    def __init__(self, config_entry):
-        """Initialize options flow."""
-        self.config_entry = config_entry
-
-    async def async_step_init(self, user_input=None):
-        """Manage options."""
-        if user_input is not None:
-            return self.async_create_entry(
-                title='',
-                data={
-                    CONF_STATS: user_input.get(CONF_STATS, False)
-                },
             )
-        stats = self.config_entry.options.get(CONF_STATS, False)
+            return self.async_show_form(step_id="init", data_schema=config_scheme, errors=errors)
 
+    async def async_step_option_get_token(self, user_input=None):
+        errors = {}
+        if user_input and CONF_FIELD_AUTH_CODE in user_input:
+            auth_code = user_input.get(CONF_FIELD_AUTH_CODE)
+            resp = await self._session.async_get_token(auth_code, self.account, 0)
+            if resp["code"] == 0:
+                auth_entry = gen_auth_entry(
+                    self._session.get_app_id(), self._session.get_app_key(), self._session.get_key_id(),
+                    self.account, self.account_type, self.country_code,
+                    resp["result"],
+                )
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=auth_entry)
+                return self.async_abort(reason="complete")
+            else:
+                errors["base"] = "auth_code_error"
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(CONF_STATS, default=stats): bool
-                }
-            ),
+            step_id="option_get_token", data_schema=DEVICE_GET_TOKEN_CONFIG, errors=errors
         )

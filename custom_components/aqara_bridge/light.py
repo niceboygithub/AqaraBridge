@@ -31,12 +31,18 @@ class AiotLightEntity(AiotToggleableEntityBase, LightEntity):
             self, hass, device, res_params, TYPE, channel, **kwargs
         )
         self._attr_color_mode = kwargs.get("color_mode")
+        self._attr_min_mireds = kwargs.get("min_mireds")
+        self._attr_max_mireds = kwargs.get("max_mireds")
+        self._extra_state_attributes.extend(["trigger_time", "trigger_dt" , "color_mode", "min_mireds", "max_mireds"])
 
     async def async_turn_on(self, **kwargs):
         """Turn the specified light on."""
         hs_color = kwargs.get("hs_color")
         if hs_color:
-            await self.async_set_resource("color", hs_color)
+            if self._attr_color_mode == "hs":
+                await self.async_set_resource("color", hs_color)
+            elif self._attr_color_mode == "xy":
+                await self.async_set_resource("color", hs_color)
 
         brightness = kwargs.get("brightness")
         if brightness:
@@ -52,7 +58,7 @@ class AiotLightEntity(AiotToggleableEntityBase, LightEntity):
         if res_name == "brightness":
             # attr_value：0-255，亮度
             return int(attr_value * 100 / 255)
-        elif res_name == "color":
+        elif res_name == "color" and self._attr_color_mode == "hs":
             # attr_value：hs颜色
             rgb_color = color_util.color_hs_to_RGB(*attr_value)
             return int(
@@ -64,6 +70,8 @@ class AiotLightEntity(AiotToggleableEntityBase, LightEntity):
                 ),
                 16,
             )
+        elif res_name == "color" and self._attr_color_mode == "xy":
+            return
         elif res_name == "color_temp":
             # attr_value：color temp
             return int(attr_value)
@@ -73,12 +81,14 @@ class AiotLightEntity(AiotToggleableEntityBase, LightEntity):
         if res_name == "brightness":
             # res_value：0-100，亮度百分比
             return int(int(res_value) * 255 / 100)
-        elif res_name == "color":
+        elif res_name == "color" and self._attr_color_mode == "hs":
             # res_value：十进制整数字符串
             argb = hex(int(res_value))
             return color_util.color_RGB_to_hs(
                 int(argb[4:6], 16), int(argb[6:8], 16), int(argb[8:10], 16)
             )
+        elif res_name == "color" and self._attr_color_mode == "xy":
+            return
         elif res_name == "color_temp":
             # res_value：153-500
             return int(res_value)

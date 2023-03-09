@@ -88,11 +88,9 @@ class AiotAirMonitorEntity(AiotEntityBase, AirQualityEntity):
         return self._attr_particulate_matter_1_0
 
     def convert_res_to_attr(self, res_name, res_value):
-        if res_name == "chip_temperature":
-            return round(float(res_value), 1)
-        if res_name == "fw_ver":
+        if res_name == "firmware_version":
             return res_value
-        if res_name == "lqi":
+        if res_name == "zigbee_lqi":
             return int(res_value)
         if res_name == "voltage":
             return format(float(res_value) / 1000, '.3f')
@@ -154,11 +152,9 @@ class AiotTvocEntity(AiotAirMonitorEntity, AirQualityEntity):
         return data
 
     def convert_res_to_attr(self, res_name, res_value):
-        if res_name == "chip_temperature":
-            return round(float(res_value), 1)
-        if res_name == "fw_ver":
+        if res_name == "firmware_version":
             return res_value
-        if res_name == "lqi":
+        if res_name == "zigbee_lqi":
             return int(res_value)
         if res_name == "voltage":
             return format(float(res_value) / 1000, '.3f')

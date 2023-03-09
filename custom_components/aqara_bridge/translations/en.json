@@ -1,10 +1,10 @@
 {
     "config": {
         "abort": {
-
+            "complete": "Config Finish."
         },
         "error": {
-
+            "get_auth_code_error": "Get SMS or Email Code Error."
         },
         "flow_title": "{name}",
         "step": {
@@ -12,7 +12,10 @@
                 "data": {
                     "field_country_code": "Cloud Server Country/Region",
                     "field_account": "Aqara Home Account (Cellular Number/ Email)",
-                    "field_refresh_token": "Refresh Token for Developer"
+                    "field_refresh_token": "Refresh Token for Developer",
+                    "field_app_id": "Aqara Cloud Develop AppID",
+                    "field_app_key": "Aqara Cloud Develop AppKey",
+                    "field_key_id": "Aqara Cloud Develop KeyId"
                 },
                 "description": "Use Aqara Home registered account to login.",
                 "title": "Login Aqara Cloud Server"
@@ -35,13 +38,29 @@
     },
     "options": {
         "step": {
-            "init": {
-                "title": "Bridge Config",
+            "inits": {
                 "data": {
-                    "stats": "Stats",
-                    "debug": "Debug"
-                }
+                    "field_country_code": "Cloud Server Country/Region",
+                    "field_account": "Aqara Home Account (Cellular Number/ Email)",
+                    "field_refresh_token": "Refresh Token for Developer",
+                    "field_app_id": "Aqara Cloud Develop AppID",
+                    "field_app_key": "Aqara Cloud Develop AppKey",
+                    "field_key_id": "Aqara Cloud Develop KeyId"
+                },
+                "description": "Use Aqara Home registered account to refresh.",
+                "title": "Login Aqara Cloud Server"
+            },
+            "option_get_token": {
+                "data": {
+                    "field_auth_code": "Verification Code via SMS or Email"
+                },
+                "description": "Please input Verification Code",
+                "title": "Login Aqara Cloud Server"
             }
+        },
+        "error": {
+            "refresh_token_error": "Refresh Token invalid",
+            "auth_code_error": "SMS or Email Code invalid"
         }
     }
 }

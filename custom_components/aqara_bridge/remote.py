@@ -2,7 +2,7 @@
 import asyncio
 import time
 import voluptuous as vol
-
+from datetime import datetime
 from homeassistant.helpers import config_validation as cv
 from homeassistant.components.remote import (
     ATTR_DELAY_SECS,
@@ -96,11 +96,11 @@ class AiotRemoteIrda(AiotEntityBase, RemoteEntity):
         if isinstance(resp, dict):
             keyid = resp['keyId']
 
-            start_time = utcnow()
-            while (utcnow() - start_time) < timedelta(seconds=timeout):
+            start_time = datetime.utcnow()
+            while (datetime.utcnow() - start_time) < datetime.timedelta(seconds=timeout):
                 message = await self.hass.async_add_executor_job(
                     self.async_received_learnresult, keyid)
-                self.debug("Message received from device: '%s'", message)
+                # _LOGGER.info("Message received from device: '%s'", message)
 
                 if isinstance(message, dict):
                     log_msg = "Received command is: {}".format(message['ircode'])

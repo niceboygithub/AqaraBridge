@@ -1,14 +1,16 @@
 import asyncio
 import json
 import logging
-from typing import Optional, Union
+import traceback
 
+from typing import Optional, Union
+from datetime import datetime
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity import DeviceInfo, Entity
-from rocketmq.client import PushConsumer, RecvMessage
 
-from .aiot_cloud import AiotCloud, APP_ID, KEY_ID, APP_KEY
+from .aiot_cloud import AiotCloud
+
 from .aiot_mapping import (
     MK_MAPPING_PARAMS,
     MK_INIT_PARAMS,
@@ -16,11 +18,29 @@ from .aiot_mapping import (
     MK_HASS_NAME,
     AIOT_DEVICE_MAPPING,
 )
-from .const import DOMAIN, HASS_DATA_AIOT_MANAGER, CONF_DEBUG
-
+from .const import DOMAIN, HASS_DATA_AIOT_MANAGER
+from .utils import *
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def __init_rocketmq():
+    import platform, os
+    fp = "%s/custom_components/aqara_bridge/3rd_libs/%s/librocketmq.so" % (os.path.abspath('.'), platform.machine())
+    if platform.system() != "Linux" or not os.path.exists(fp):
+        _LOGGER.error(f"AqaraBridge need rocketmq, you need install it. Not Fund librocketmq from %s." % fp)
+        return 
+    target_p = "/usr/local/lib/librocketmq.so"
+    if not os.path.exists(target_p):
+        import shutil
+        _LOGGER.warning(f"Copy librocketmq from %s to %s" % (fp, target_p))
+        shutil.copyfile(fp, target_p)
+
+try:
+    from rocketmq.client import PushConsumer, RecvMessage
+except:
+    __init_rocketmq()
+    from rocketmq.client import PushConsumer, RecvMessage
 
 class AiotDevice:
     def __init__(self, **kwargs):
@@ -34,66 +54,87 @@ class AiotDevice:
         self.firmware_version = kwargs.get("firmwareVersion")
         self.create_time = kwargs.get("createTime")
         self.update_time = kwargs.get("updateTime")
+        self.position_id = kwargs.get("positionId")
+        self.position_name = None
         self.platforms = None
+        self.manufacturer = None
+        self.heard_version = None
+        self.resource_names = []
         for device in AIOT_DEVICE_MAPPING:
             if self.model in device:
                 self.platforms = device['params']
+                self.manufacturer = device[self.model][0]
+                self.heard_version = device[self.model][2]
                 break
         self.children = []
 
     @property
     def is_supported(self):
         return self.platforms is not None
-
+    
+    def get_resource_name(self, resource_id):
+        for r in self.resource_names:
+            if r['resourceId'] == resource_id:
+               return r['name']
 
 class AiotEntityBase(Entity):
-    _channel = None
-    _device = None
-    _res_params = None
-    _supported_resources = None
-    _aiot_manager = None
-
-    _attr_lqi = None
-    _attr_chip_temperature = None
-    _attr_voltage = None
-    _attr_fw_ver = None
-
     def __init__(self, hass, device, res_params, type_name, channel=None, **kwargs):
-        self._device = device
-        self._res_params = res_params
-        self._supported_resources = []
-        [
-            self._supported_resources.append(v[0].format(channel))
-            for k, v in res_params.items()
-        ]
-        self._channel = channel
-
         self.hass = hass
+         # 设备信息
+        self._device = device
+        # 参数
+        self._res_params = res_params
         self._attr_name = device.device_name
+        self._position_name = device.position_name
+        self._supported_resources = []
+        for k, v in res_params.items():
+            resource_id = v[0].format(channel)
+            self._supported_resources.append(resource_id)
+            # 获取资源名称
+            resource_name = device.get_resource_name(resource_id)
+            if resource_name is not None:
+                 self._attr_name = resource_name
+        
+        if self._position_name is not None:
+            self._attr_name = "%s-%s" % (self._position_name, self._attr_name)
+
+        # 按键通道，多按键参数
+        self._channel = channel
+        
         self._attr_should_poll = False
+        self._attr_firmware_version = device.firmware_version
+        # Zigbee信号强度
+        self._attr_zigbee_lqi = None
+        # 电压
+        self._attr_voltage = None
+        # 数据更新触发时间，仅限来自mq消息获取到触发信息时间
+        self.trigger_time = None
+        # 设备厂商
+        manufacturer = (device.model or "Lumi").split(".", 1)[0].capitalize() if device.manufacturer is None else device.manufacturer
+
         self._attr_unique_id = (
-            f"{DOMAIN}.{type_name}_0x{device.did.split('.', 1)[1]}_{kwargs.get('hass_attr_name')}"
+            f"{DOMAIN}.{type_name}_{manufacturer.lower()}_{device.did.split('.', 1)[1][-6:]}_{kwargs.get('hass_attr_name')}"
         )
-        self.entity_id = f"{DOMAIN}.0x{device.did.split('.', 1)[1]}_{kwargs.get('hass_attr_name')}"
+        self.entity_id = f"{DOMAIN}.{manufacturer.lower()}_{device.did.split('.', 1)[1][-6:]}_{kwargs.get('hass_attr_name')}"
         if channel:
             self._attr_unique_id = f"{self._attr_unique_id}_{channel}"
             self.entity_id = f"{self.entity_id}_{channel}"
+    
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.did)},
             name=self._attr_name,
             model=device.model,
-            manufacturer=(device.model or "Lumi").split(".", 1)[0].capitalize(),
+            manufacturer=manufacturer,
             sw_version=device.firmware_version,
+            hw_version=device.heard_version,
+            suggested_area=self._position_name
         )
         self._attr_supported_features = kwargs.get("supported_features")
         self._attr_unit_of_measurement = kwargs.get("unit_of_measurement")
         self._attr_device_class = kwargs.get("device_class")
 
         self._aiot_manager: AiotManager = hass.data[DOMAIN][HASS_DATA_AIOT_MANAGER]
-
-    def debug(self, message: str):
-        """ deubug function """
-        self._aiot_manager.debug(f"{self.entity_id}: {message}")
+        self._extra_state_attributes = ["position_name"]
 
     @property
     def channel(self) -> int:
@@ -108,14 +149,9 @@ class AiotEntityBase(Entity):
         return self._device
 
     @property
-    def lqi(self):
+    def zigbee_lqi(self):
         """Return the signal strength of zigbee """
-        return self._attr_lqi
-
-    @property
-    def chip_temperature(self):
-        """Return the chip temperature."""
-        return self._attr_chip_temperature
+        return self._attr_zigbee_lqi
 
     @property
     def voltage(self):
@@ -123,9 +159,30 @@ class AiotEntityBase(Entity):
         return self._attr_voltage
 
     @property
-    def fw_ver(self):
+    def firmware_version(self):
         """Return firmware version."""
-        return self._attr_fw_ver
+        return self._attr_firmware_version
+    
+    @property
+    def position_name(self):
+        return self._position_name
+
+    @property
+    def trigger_dt(self):
+        if self.trigger_time is not None:
+            return datetime.fromtimestamp(self.trigger_time, local_zone(self.hass))
+
+    @property
+    def extra_state_attributes(self):
+        """Return the optional state attributes."""
+        data = {}
+
+        for attr in self._extra_state_attributes:
+            value = getattr(self, attr)
+            if value is not None:
+                data[attr] = value
+
+        return data
 
     def get_res_id_by_name(self, res_name):
         return self._res_params[res_name][0].format(self._channel)
@@ -133,8 +190,7 @@ class AiotEntityBase(Entity):
     async def async_set_res_value(self, res_name, value):
         """设置资源值"""
         res_id = self.get_res_id_by_name(res_name)
-        if 'verbose' in self._aiot_manager.debug_option:
-            self.debug("async_set_res_value {} {} {}".format(self.device.did, res_id, value))
+        _LOGGER.info("method:async_set_res_value, device:{}, res_id:{}, set_value:{}".format(self.device.did, res_id, value))
         return await self._aiot_manager.session.async_write_resource_device(
             self.device.did, res_id, value
         )
@@ -143,7 +199,7 @@ class AiotEntityBase(Entity):
         """获取资源值"""
         res_ids = []
         if len(args) > 0:
-            res_ids = args
+            res_ids.extend(args)
         else:
             [
                 res_ids.append(self.get_res_id_by_name(k))
@@ -153,11 +209,37 @@ class AiotEntityBase(Entity):
             self.device.did, res_ids
         )
 
+    async def async_fetch_resource_history(self, page_size=1, *args):
+        """page_size过大会请求异常，如果为了获取最后状态只用1就可以"""
+        res_ids = []
+        if len(args) > 0:
+            res_ids = args
+        else:
+            [
+                res_ids.append(self.get_res_id_by_name(k))
+                for k, v in self._res_params.items()
+            ]
+        
+        return await self._aiot_manager.session.async_query_resource_history(
+            self.device.did, res_ids,page_size=page_size
+        )
+
+
+    async def async_query_position_detail(self, positionIds):
+        return await self._aiot_manager.session.async_query_position_detail(
+            positionIds
+        )
+
+    async def async_query_resource_name(self, subjectIds):
+        return await self._aiot_manager.session.async_query_resource_name(
+            subjectIds
+        )
+
     async def async_update(self):
         resp = await self.async_fetch_res_values()
         if resp:
             for x in resp:
-                await self.async_set_attr(x["resourceId"], x["value"], write_ha_state=False)
+                await self.async_set_attr(x["resourceId"], x["value"], x["timeStamp"], write_ha_state=False)
 
     async def async_set_resource(self, res_name, attr_value):
         """设置aiot resource的值"""
@@ -166,8 +248,7 @@ class AiotEntityBase(Entity):
             res_value = attr_value
             current_value = getattr(self, tup_res[1])
             resp = None
-            if 'verbose' in self._aiot_manager.debug_option:
-                self.debug("set {} with value {} on {}".format(self.device.did, res_value, res_name))
+            _LOGGER.info("[set_resource, {}, {}]{}:{}".format(self.device.did, self._attr_name, res_name, res_value))
             if current_value != attr_value:
                 res_value = self.convert_attr_to_res(res_name, attr_value)
                 resp = await self.async_set_res_value(res_name, res_value)
@@ -176,18 +257,19 @@ class AiotEntityBase(Entity):
             self.async_write_ha_state()
             return resp
 
-    async def async_set_attr(self, res_id, res_value, write_ha_state=True):
+    async def async_set_attr(self, res_id, res_value, timestamp, write_ha_state=True):
         """设置ha attr的值"""
         res_name = next(
             k
             for k, v in self._res_params.items()
             if v[0].format(self.channel) == res_id
         )
+        self.trigger_time = round(int(timestamp) / 1000.00, 0)
         tup_res = self._res_params.get(res_name)
         attr_value = self.convert_res_to_attr(res_name, res_value)
         current_value = getattr(self, tup_res[1], None)
-        if 'verbose' in self._aiot_manager.debug_option:
-            self.debug("set value {} current: {} write: {}".format(attr_value, current_value, write_ha_state))
+
+        _LOGGER.info("[set_attr, {}, {}]{}, {}:{}".format(self.device.did, self._attr_name, self.trigger_dt, res_name, res_value))
         if current_value != attr_value:
             self.__setattr__(tup_res[1], attr_value)
             if write_ha_state:
@@ -195,8 +277,7 @@ class AiotEntityBase(Entity):
 
     async def async_device_connection(self, Open=False):
         """ enable/disable device connection """
-        if 'verbose' in self._aiot_manager.debug_option:
-            self.debug("async_device_connection {}".format(self.device.did))
+        _LOGGER.info("async_device_connection {}".format(self.device.did))
         if Open:
             return await self._aiot_manager.session.async_write_device_openconnect(
                 self.device.did
@@ -220,7 +301,7 @@ class AiotEntityBase(Entity):
         return await self._aiot_manager.session.async_query_ir_learnresult(
             self.device.did, keyid
         )
-
+    
     def convert_attr_to_res(self, res_name, attr_value):
         """从attr转换到res"""
         return attr_value
@@ -255,11 +336,15 @@ class AiotToggleableEntityBase(AiotEntityBase):
 
 
 class AiotMessageHandler:
-    def __init__(self, loop):
+    def __init__(self, loop, app_id, app_key, key_id):
+        self._server = "3rd-subscription.aqara.cn:9876"
+        self._app_id = app_id
+        self._app_key = app_key
+        self._key_id = key_id
         self._loop = loop
-        self._consumer = PushConsumer(APP_ID)
-        self._consumer.set_namesrv_addr("3rd-subscription.aqara.cn:9876")
-        self._consumer.set_session_credentials(KEY_ID, APP_KEY, "")
+        self._consumer = PushConsumer(app_id)
+        self._consumer.set_namesrv_addr(self._server)
+        self._consumer.set_session_credentials(key_id, app_key, "")
 
     def start(self, callback):
         def consumer_callback(msg: RecvMessage):
@@ -269,8 +354,9 @@ class AiotMessageHandler:
                 self._loop,
             )
 
-        self._consumer.subscribe(APP_ID, consumer_callback)
+        self._consumer.subscribe(self._app_id, consumer_callback)
         self._consumer.start()
+        _LOGGER.info("start_message_customer ---> server:{}, key_id:{}, app_key:{} <---".format(self._server, self._app_id, self._app_key))
 
     def stop(self):
         self._consumer.shutdown()
@@ -298,22 +384,11 @@ class AiotManager:
     # 插件不支持的设备列表
     _unsupported_devices: Optional[list] = []
 
-    debug_option = ''
-
     def __init__(self, hass: HomeAssistant, session: AiotCloud):
         self._hass = hass
         self._session = session
-        self._msg_handler = AiotMessageHandler(asyncio.get_event_loop())
-        self._msg_handler.start(self._msg_callback)
+        self._msg_handler = None
         self._options = None
-
-    def debug(self, message: str):
-        """ deubug function """
-        if self._options is None:
-            self._options = self._session.get_options()
-        self.debug_option = self._options.get('debug', '')
-        if 'true' in self.debug_option:
-            _LOGGER.error(f"{message}")
 
     @property
     def session(self) -> AiotCloud:
@@ -343,85 +418,77 @@ class AiotManager:
         [devices.append(x) for x in self._all_devices.values() if not x.is_supported]
         return devices
 
+    def start_msg_hanlder(self, app_id, app_key, key_id):
+        self._msg_handler = AiotMessageHandler(asyncio.get_event_loop(), app_id, app_key, key_id)
+        self._msg_handler.start(self._msg_callback)
+
     async def _msg_callback(self, msg):
-        """消息推送格式，见https://opendoc.aqara.cn/docs/%E4%BA%91%E5%AF%B9%E6%8E%A5%E5%BC%80%E5%8F%91%E6%89%8B%E5%86%8C/%E6%B6%88%E6%81%AF%E6%8E%A8%E9%80%81/%E6%B6%88%E6%81%AF%E6%8E%A8%E9%80%81%E6%A0%BC%E5%BC%8F.html"""
-        if msg.get("msgType"):
-            # 属性消息，resource_report
-            if 'msg' in self.debug_option:
-                self.debug("msgType {}".format(msg['data']))
-            for x in msg["data"]:
-                entities = self._devices_entities.get(x["subjectId"])
-                if entities:
-                    for entity in entities:
-                        if x["resourceId"] in entity.supported_resources:
-                            await entity.async_set_attr(x["resourceId"], x["value"])
-        elif msg.get("eventType"):
-            if 'msg' in self.debug_option:
-                self.debug("eventType {}".format(msg['data']))
-            # 事件消息
-            if msg["eventType"] == "gateway_bind":  # 网关绑定
-                pass
-            elif msg["eventType"] == "subdevice_bind" or msg['cause'] == 11:  # 子设备绑定
-                pass
-            elif msg["eventType"] == "gateway_unbind":  # 网关解绑
-                pass
-            elif msg["eventType"] == "unbind_sub_gw":  # 子设备解绑
-                pass
-            elif msg["eventType"] == "gateway_online":  # 网关在线
-                pass
-            elif msg["eventType"] == "gateway_offline":  # 网关离线
-                pass
-            elif msg["eventType"] == "subdevice_online":  # 子设备在线
-                pass
-            elif msg["eventType"] == "subdevice_offline":  # 子设备离线
-                pass
-            else:  # 其他事件暂不处理
-                pass
-        else:
-            _LOGGER.warn("unknown msg: {}".format(msg))
+        try:
+            msg_time = ts_format_str_ms(msg.get("time"), self._hass)
+            if msg.get("msgType"):
+                # 属性消息，resource_report
+                for x in msg["data"]:
+                    entities = self._devices_entities.get(x["subjectId"])
+                    if entities:
+                        is_support = False
+                        for entity in entities:
+                            if x["resourceId"] in entity.supported_resources:
+                                _LOGGER.info("[msg_callback, {}]msg_time:{}, msg_data:{}".format(
+                                     "async_set_attr", msg_time, msg['data']))
+                                is_support = True
+                                await entity.async_set_attr(x["resourceId"], x["value"], x["time"])
+                        if not is_support:
+                            _LOGGER.warn("[msg_callback, unsupport_resources]{}, {}, {}:{}".format(
+                                ts_format_str_ms(x["time"], self._hass), x["subjectId"], x["resourceId"], x["value"]))
+                    else:
+                        _LOGGER.info("[msg_callback, not_in_devices_entities]{}, {}".format(ts_format_str_ms(x["time"], self._hass), x))
+            elif msg.get("eventType"):
+                _LOGGER.info("[msg_callback, {}]msg_time:{}, msg_data:{}".format(msg.get("eventType"), msg_time, msg['data']))
+                # 事件消息
+                if msg["eventType"] == "gateway_bind":  # 网关绑定
+                    pass
+                elif msg["eventType"] == "subdevice_bind":  # 子设备绑定
+                    pass
+                elif msg["eventType"] == "gateway_unbind":  # 网关解绑
+                    pass
+                elif msg["eventType"] == "unbind_sub_gw":  # 子设备解绑
+                    pass
+                elif msg["eventType"] == "gateway_online":  # 网关在线
+                    pass
+                elif msg["eventType"] == "gateway_offline":  # 网关离线
+                    pass
+                elif msg["eventType"] == "subdevice_online":  # 子设备在线
+                    pass
+                elif msg["eventType"] == "subdevice_offline":  # 子设备离线
+                    pass
+                else:  # 其他事件暂不处理
+                    pass
+            else:
+                _LOGGER.warn("[msg_callback, {}]msg_time:{}, msg_data:{}".format("unknow_message", msg_time, msg['data']))
+        except Exception as _:
+            _LOGGER.exception("[msg_callback, error]process_message_error.\n")
 
     async def async_refresh_all_devices(self):
         """获取Aiot所有设备"""
         self._all_devices = {}
         results = await self._session.async_query_all_devices_info()
-        [self._all_devices.setdefault(x["did"], AiotDevice(**x)) for x in results]
+        for x in results:
+            device = AiotDevice(**x)
+            postions = await self._session.async_query_position_detail([device.position_id])
+            device.position_name = postions[0]['positionName']
+            self._all_devices.setdefault(x["did"], device)
 
-    async def async_add_devices(
-        self,
-        config_entry: ConfigEntry,
-        devices: Optional[list],
-        auto_add_sub_devices=False,
-    ):
+    async def async_add_all_devices(self, config_entry: ConfigEntry):
         await self.async_refresh_all_devices()  # 刷新一次所有设备列表
         self._entries_devices.setdefault(config_entry.entry_id, [])
         self._config_entries[config_entry.entry_id] = config_entry
-        for device in devices:
+        for device in self.all_devices:
             # 这里看情况检查did是否已经存在，理论上来说应该不会重复，现在代码未做重复判断
             if device.is_supported:
                 self._managed_devices[device.did] = device
                 self._entries_devices[config_entry.entry_id].append(device.did)
-                if auto_add_sub_devices and device.model_type == 1:
-                    sub_devices = []
-                    [
-                        sub_devices.append(x)
-                        for x in self.all_devices
-                        if x.parent_did == device.did
-                    ]
-                    for sub_device in sub_devices:
-                        if sub_device.is_supported:
-                            device.children.append(sub_device)
-                            self._managed_devices[sub_device.did] = sub_device
-                            self._entries_devices[config_entry.entry_id].append(
-                                sub_device.did
-                            )
-                        else:
-                            _LOGGER.warn(
-                                f"Aqara device is not supported. Deivce model is '{sub_device.model}'."
-                            )
             else:
-                _LOGGER.warn(
-                    f"Aqara device is not supported. Deivce model is '{device.model}'."
-                )
+                _LOGGER.warn(f"Aqara device is not supported. Deivce model is '{device.model}'.")
                 continue
 
     async def async_forward_entry_setup(self, config_entry: ConfigEntry):
@@ -431,15 +498,10 @@ class AiotManager:
             if self._managed_devices[x].is_supported:
                 for i in range(len(self._managed_devices[x].platforms)):
                     platforms.extend(self._managed_devices[x].platforms[i].keys())
-
-        platforms = set(platforms)
-        [
-            self._hass.async_create_task(
-                self._hass.config_entries.async_forward_entry_setup(config_entry, x)
+        
+        self._hass.async_create_task(
+                self._hass.config_entries.async_forward_entry_setups(config_entry, set(platforms))
             )
-            for x in platforms
-        ]
-
     async def async_add_entities(
         self, config_entry: ConfigEntry, entity_type: str, cls_list, async_add_entities
     ):
@@ -462,7 +524,7 @@ class AiotManager:
                         if entity_type in p:
                             params.append(p[entity_type])
                     break
-
+            device.resource_names = await self._session.async_query_resource_name([device.did])
             ch_count = None
             # 这里需要处理特殊设备
             if device.model == "lumi.airrtc.vrfegl01":
